@@ -17,7 +17,7 @@
             <meta name="viewport" content="width=device-width,
                 initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
             <style>
-                #map_38eda562d52686c34eb71d161cc1ce71 {
+                #map_3bfb1e9f4420233d456e6ec5655a8a75 {
                     position: relative;
                     width: 100.0%;
                     height: 100.0%;
@@ -61,8 +61,18 @@
                 if (window[map_id]) {
                     clearInterval(checkMapInterval);
                     var map = window[map_id];
-                    var layer_objects = {"Weekend - Stops": "feature_group_679364691dd4e4ea9fce68ca2e9c8c79", "Weekend - Frequent Stop Radius (500m)": "feature_group_4541d5d6c0e4c2a49f9014c6192092dc", "Workday - Stops": "feature_group_5b4930d45473ad0e3cbbb86ad2dce622", "Workday - Frequent Stop Radius (500m)": "feature_group_26ab1a9c0d808135daabbe699574923b", "Saturday - Stops": "feature_group_be9da11cc4ef0a5478ff1b21c791372b", "Saturday - Frequent Stop Radius (500m)": "feature_group_d353d53e6cc0db4955eee6e2a1b4c541", "Sunday - Stops": "feature_group_92963e52b6be68dc0bb074dfa98d75a2", "Sunday - Frequent Stop Radius (500m)": "feature_group_24cd0a2f963a62f45b01a0710b8f2b3d"};
+                    var layer_objects = {"Weekend - Stops": "feature_group_e0f34281265eaa62d03b139ad558749d", "Weekend - Frequent Stop Radius (500m)": "feature_group_0e5ddbe3135f6e7e44f22d746cdf138d", "Workday - Stops": "feature_group_117d97961da0e29ba884b3e1e13a1303", "Workday - Frequent Stop Radius (500m)": "feature_group_47b5dd27eb0738599cb8f31c462dd416", "Saturday - Stops": "feature_group_afc98155233253fd47eacf04e498b11f", "Saturday - Frequent Stop Radius (500m)": "feature_group_1d89c0233dfa85f88f47b5741551d569", "Sunday - Stops": "feature_group_eb82537f75e89c683e84e25b4eeb1801", "Sunday - Frequent Stop Radius (500m)": "feature_group_a32313d3dec618538502c01262d04a5d"};
                     var loadedData = {};
+                    var arrivalsData = null;
+                    var activeDayType = 'weekend'; // Default
+
+                    fetch('./data/arrivals.json')
+                        .then(response => response.json())
+                        .then(data => {
+                            arrivalsData = data;
+                            loadGeoJson('Weekend - Stops', layerConfigs['Weekend - Stops'].url, layerConfigs['Weekend - Stops'].options);
+                        })
+                        .catch(err => console.error('Failed to load arrivals.json', err));
 
                     var layerConfigs = {
                         'Weekend - Stops': { url: './data/weekend_stops.geojson', options: { pointToLayer: createStopMarker } },
@@ -79,21 +89,91 @@
 
                     function createStopMarker(feature, latlng) {
                         var marker = L.circleMarker(latlng, { radius: 5, color: feature.properties.color, fillColor: feature.properties.color, fillOpacity: 0.7 });
+                        marker.feature = feature; // Attach feature data to marker
                         marker.bindTooltip(feature.properties.tooltip);
-                        var iframe = document.createElement('iframe');
-                        iframe.style.width = '400px'; iframe.style.height = '450px'; iframe.style.border = 'none';
-                        iframe.srcdoc = feature.properties.popupContent;
-                        marker.bindPopup(L.popup({ maxWidth: 400 }).setContent(iframe));
+                        marker.on('click', function(e) {
+                            var props = e.target.feature.properties;
+                            var popupContent = buildPopupHtml(props, activeDayType);
+                            var iframe = document.createElement('iframe');
+                            iframe.style.width = '600px'; iframe.style.height = '450px'; iframe.style.border = 'none';
+                            iframe.srcdoc = popupContent;
+                            marker.bindPopup(L.popup({ maxWidth: 600 }).setContent(iframe)).openPopup();
+                        });
                         return marker;
+                    }
+                    
+                    function generateArrivalRowsHtml(arrivals) {
+                        if (!arrivals || arrivals.length === 0) return '<tr><td colspan="4" style="text-align: center;">No service in this window.</td></tr>';
+                        let extended = [{ arrival_time: '10:00:00', route_short_name: '---', trip_headsign: 'Start of Window' }, ...arrivals, { arrival_time: '20:00:00', route_short_name: '---', trip_headsign: 'End of Window' }];
+                        extended.sort((a, b) => a.arrival_time.localeCompare(b.arrival_time));
+                        
+                        let rowsHtml = '';
+                        for (let i = 0; i < extended.length; i++) {
+                            let arrival = extended[i];
+                            let prevTime = (i > 0) ? new Date('1970-01-01T' + extended[i-1].arrival_time + 'Z') : null;
+                            let currTime = new Date('1970-01-01T' + arrival.arrival_time + 'Z');
+                            let wait = prevTime ? Math.round((currTime - prevTime) / 60000) : '-';
+                            let style = (wait > 30) ? 'background-color: #ffdddd;' : '';
+                            if (arrival.trip_headsign.includes('Window')) style += 'color: #888; font-style: italic;';
+                            rowsHtml += `<tr style="${style}"><td style="padding:2px;">${arrival.arrival_time.substring(0,5)}</td><td style="padding:2px;">${arrival.route_short_name}</td><td style="padding:2px;">${arrival.trip_headsign}</td><td style="padding:2px;text-align:right;">${wait}</td></tr>`;
+                        }
+                        return rowsHtml;
+                    }
+
+                    function buildPopupHtml(props, dayType) {
+                        if (!arrivalsData || !arrivalsData[dayType]) return 'Loading arrival data...';
+                        
+                        let stopTableHtml = '';
+                        let groupTableHtml = '';
+
+                        if (dayType === 'weekend') {
+                            // Filter weekend data into Saturday and Sunday
+                            const allStopArrivals = arrivalsData[dayType].filter(a => a.stop_id === props.stop_id);
+                            const allGroupArrivals = arrivalsData[dayType].filter(a => a.stop_group_id === props.group_id);
+
+                            const stopArrivalsSat = allStopArrivals.filter(a => a.service_day === 'Saturday');
+                            const stopArrivalsSun = allStopArrivals.filter(a => a.service_day === 'Sunday');
+                            const groupArrivalsSat = allGroupArrivals.filter(a => a.service_day === 'Saturday');
+                            const groupArrivalsSun = allGroupArrivals.filter(a => a.service_day === 'Sunday');
+                            
+                            // Build a single stream of rows for the stop table: Saturday arrivals then Sunday arrivals
+                            stopTableHtml = `
+                                <tr><td colspan="4" style="text-align:center; font-weight:bold; background-color:#eee;">Saturday</td></tr>
+                                ${generateArrivalRowsHtml(stopArrivalsSat)}
+                                <tr><td colspan="4" style="text-align:center; font-weight:bold; background-color:#eee;">Sunday</td></tr>
+                                ${generateArrivalRowsHtml(stopArrivalsSun)}
+                            `;
+
+                            // Build a single stream of rows for the group table: Saturday arrivals then Sunday arrivals
+                            groupTableHtml = `
+                                <tr><td colspan="4" style="text-align:center; font-weight:bold; background-color:#eee;">Saturday</td></tr>
+                                ${generateArrivalRowsHtml(groupArrivalsSat)}
+                                <tr><td colspan="4" style="text-align:center; font-weight:bold; background-color:#eee;">Sunday</td></tr>
+                                ${generateArrivalRowsHtml(groupArrivalsSun)}
+                            `;
+
+                        } else {
+                            // Handle single days (workday, saturday, sunday)
+                            let stopArrivals = arrivalsData[dayType].filter(a => a.stop_id === props.stop_id);
+                            let groupArrivals = arrivalsData[dayType].filter(a => a.stop_group_id === props.group_id);
+                            
+                            stopTableHtml = generateArrivalRowsHtml(stopArrivals);
+                            groupTableHtml = generateArrivalRowsHtml(groupArrivals);
+                        }
+
+                        return `<b>Stop:</b> ${props.stop_name} (${props.stop_id})<br><b>Group:</b> ${props.group_name} (${props.group_id})<hr>
+                        <table style="width:100%;">
+                            <tr style="vertical-align:top;">
+                                <td style="width:50%; padding-right:5px;"><b>This Stop's Arrivals</b><div style="max-height:300px; overflow-y:auto;"><table style="width:100%; border-collapse:collapse;"><tr style="text-align:left;"><th>Time</th><th>Line</th><th>Dir</th><th>Wait</th></tr>${stopTableHtml}</table></div></td>
+                                <td style="width:50%; padding-left:5px; border-left: 1px solid #ccc;"><b>Entire Group's Arrivals</b><div style="max-height:300px; overflow-y:auto;"><table style="width:100%; border-collapse:collapse;"><tr style="text-align:left;"><th>Time</th><th>Line</th><th>Dir</th><th>Wait</th></tr>${groupTableHtml}</table></div></td>
+                            </tr>
+                        </table>`;
                     }
 
                     function loadGeoJson(layerName, url, options) {
                         if (loadedData[layerName]) return;
                         fetch(url)
-                            .then(response => {
-                                if (!response.ok) throw new Error('Network response was not ok for ' + url);
-                                return response.json();
-                            })
+                            .then(response => response.json())
                             .then(data => {
                                 var leaflet_variable_name = layer_objects[layerName];
                                 var leaflet_layer_object = window[leaflet_variable_name];
@@ -101,37 +181,34 @@
                                     var geoJsonLayer = L.geoJson(data, options);
                                     geoJsonLayer.addTo(leaflet_layer_object);
                                     loadedData[layerName] = true;
-                                } else {
-                                    console.error('Could not find Leaflet layer object for:', layerName);
                                 }
                             })
                             .catch(err => console.error('Error loading GeoJSON:', err));
                     }
+
+                    map.on('baselayerchange', function(e) {
+                        activeDayType = e.name.split(' ')[0].toLowerCase();
+                    });
 
                     map.on('overlayadd', function(e) {
                         if (layerConfigs[e.name]) {
                             loadGeoJson(e.name, layerConfigs[e.name].url, layerConfigs[e.name].options);
                         }
                     });
-
-                    var defaultLayerName = 'Weekend - Stops';
-                    if (layerConfigs[defaultLayerName]) {
-                         loadGeoJson(defaultLayerName, layerConfigs[defaultLayerName].url, layerConfigs[defaultLayerName].options);
-                    }
                 }
             }, 100);
         })();
     </script>
     
     
-            <div class="folium-map" id="map_38eda562d52686c34eb71d161cc1ce71" ></div>
+            <div class="folium-map" id="map_3bfb1e9f4420233d456e6ec5655a8a75" ></div>
         
 </body>
 <script>
     
     
-            var map_38eda562d52686c34eb71d161cc1ce71 = L.map(
-                "map_38eda562d52686c34eb71d161cc1ce71",
+            var map_3bfb1e9f4420233d456e6ec5655a8a75 = L.map(
+                "map_3bfb1e9f4420233d456e6ec5655a8a75",
                 {
                     center: [53.4285, 14.5528],
                     crs: L.CRS.EPSG3857,
@@ -148,7 +225,7 @@
 
         
     
-            var tile_layer_bbe61f095988c4a2b8dd034a0a828416 = L.tileLayer(
+            var tile_layer_d087ef7dec28b157c7b3209e4744add3 = L.tileLayer(
                 "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                 {
   "minZoom": 0,
@@ -165,84 +242,84 @@
             );
         
     
-            tile_layer_bbe61f095988c4a2b8dd034a0a828416.addTo(map_38eda562d52686c34eb71d161cc1ce71);
+            tile_layer_d087ef7dec28b157c7b3209e4744add3.addTo(map_3bfb1e9f4420233d456e6ec5655a8a75);
         
     
-            var feature_group_679364691dd4e4ea9fce68ca2e9c8c79 = L.featureGroup(
+            var feature_group_e0f34281265eaa62d03b139ad558749d = L.featureGroup(
                 {
 }
             );
         
     
-            feature_group_679364691dd4e4ea9fce68ca2e9c8c79.addTo(map_38eda562d52686c34eb71d161cc1ce71);
+            feature_group_e0f34281265eaa62d03b139ad558749d.addTo(map_3bfb1e9f4420233d456e6ec5655a8a75);
         
     
-            var feature_group_4541d5d6c0e4c2a49f9014c6192092dc = L.featureGroup(
+            var feature_group_0e5ddbe3135f6e7e44f22d746cdf138d = L.featureGroup(
                 {
 }
             );
         
     
-            var feature_group_5b4930d45473ad0e3cbbb86ad2dce622 = L.featureGroup(
+            var feature_group_117d97961da0e29ba884b3e1e13a1303 = L.featureGroup(
                 {
 }
             );
         
     
-            var feature_group_26ab1a9c0d808135daabbe699574923b = L.featureGroup(
+            var feature_group_47b5dd27eb0738599cb8f31c462dd416 = L.featureGroup(
                 {
 }
             );
         
     
-            var feature_group_be9da11cc4ef0a5478ff1b21c791372b = L.featureGroup(
+            var feature_group_afc98155233253fd47eacf04e498b11f = L.featureGroup(
                 {
 }
             );
         
     
-            var feature_group_d353d53e6cc0db4955eee6e2a1b4c541 = L.featureGroup(
+            var feature_group_1d89c0233dfa85f88f47b5741551d569 = L.featureGroup(
                 {
 }
             );
         
     
-            var feature_group_92963e52b6be68dc0bb074dfa98d75a2 = L.featureGroup(
+            var feature_group_eb82537f75e89c683e84e25b4eeb1801 = L.featureGroup(
                 {
 }
             );
         
     
-            var feature_group_24cd0a2f963a62f45b01a0710b8f2b3d = L.featureGroup(
+            var feature_group_a32313d3dec618538502c01262d04a5d = L.featureGroup(
                 {
 }
             );
         
     
-            var layer_control_e10e2719f4b8d35d1cd73557d6ec01d5_layers = {
+            var layer_control_08d6f8383688145f597c0491dbcd77ca_layers = {
                 base_layers : {
-                    "openstreetmap" : tile_layer_bbe61f095988c4a2b8dd034a0a828416,
+                    "openstreetmap" : tile_layer_d087ef7dec28b157c7b3209e4744add3,
                 },
                 overlays :  {
-                    "Weekend - Stops" : feature_group_679364691dd4e4ea9fce68ca2e9c8c79,
-                    "Weekend - Frequent Stop Radius (500m)" : feature_group_4541d5d6c0e4c2a49f9014c6192092dc,
-                    "Workday - Stops" : feature_group_5b4930d45473ad0e3cbbb86ad2dce622,
-                    "Workday - Frequent Stop Radius (500m)" : feature_group_26ab1a9c0d808135daabbe699574923b,
-                    "Saturday - Stops" : feature_group_be9da11cc4ef0a5478ff1b21c791372b,
-                    "Saturday - Frequent Stop Radius (500m)" : feature_group_d353d53e6cc0db4955eee6e2a1b4c541,
-                    "Sunday - Stops" : feature_group_92963e52b6be68dc0bb074dfa98d75a2,
-                    "Sunday - Frequent Stop Radius (500m)" : feature_group_24cd0a2f963a62f45b01a0710b8f2b3d,
+                    "Weekend - Stops" : feature_group_e0f34281265eaa62d03b139ad558749d,
+                    "Weekend - Frequent Stop Radius (500m)" : feature_group_0e5ddbe3135f6e7e44f22d746cdf138d,
+                    "Workday - Stops" : feature_group_117d97961da0e29ba884b3e1e13a1303,
+                    "Workday - Frequent Stop Radius (500m)" : feature_group_47b5dd27eb0738599cb8f31c462dd416,
+                    "Saturday - Stops" : feature_group_afc98155233253fd47eacf04e498b11f,
+                    "Saturday - Frequent Stop Radius (500m)" : feature_group_1d89c0233dfa85f88f47b5741551d569,
+                    "Sunday - Stops" : feature_group_eb82537f75e89c683e84e25b4eeb1801,
+                    "Sunday - Frequent Stop Radius (500m)" : feature_group_a32313d3dec618538502c01262d04a5d,
                 },
             };
-            let layer_control_e10e2719f4b8d35d1cd73557d6ec01d5 = L.control.layers(
-                layer_control_e10e2719f4b8d35d1cd73557d6ec01d5_layers.base_layers,
-                layer_control_e10e2719f4b8d35d1cd73557d6ec01d5_layers.overlays,
+            let layer_control_08d6f8383688145f597c0491dbcd77ca = L.control.layers(
+                layer_control_08d6f8383688145f597c0491dbcd77ca_layers.base_layers,
+                layer_control_08d6f8383688145f597c0491dbcd77ca_layers.overlays,
                 {
   "position": "topright",
   "collapsed": true,
   "autoZIndex": true,
 }
-            ).addTo(map_38eda562d52686c34eb71d161cc1ce71);
+            ).addTo(map_3bfb1e9f4420233d456e6ec5655a8a75);
 
         
 </script>
