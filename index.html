@@ -17,7 +17,7 @@
             <meta name="viewport" content="width=device-width,
                 initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
             <style>
-                #map_3bfb1e9f4420233d456e6ec5655a8a75 {
+                #map_86334ab4006ad5a8ed79adf60de9289f {
                     position: relative;
                     width: 100.0%;
                     height: 100.0%;
@@ -61,39 +61,124 @@
                 if (window[map_id]) {
                     clearInterval(checkMapInterval);
                     var map = window[map_id];
-                    var layer_objects = {"Weekend - Stops": "feature_group_e0f34281265eaa62d03b139ad558749d", "Weekend - Frequent Stop Radius (500m)": "feature_group_0e5ddbe3135f6e7e44f22d746cdf138d", "Workday - Stops": "feature_group_117d97961da0e29ba884b3e1e13a1303", "Workday - Frequent Stop Radius (500m)": "feature_group_47b5dd27eb0738599cb8f31c462dd416", "Saturday - Stops": "feature_group_afc98155233253fd47eacf04e498b11f", "Saturday - Frequent Stop Radius (500m)": "feature_group_1d89c0233dfa85f88f47b5741551d569", "Sunday - Stops": "feature_group_eb82537f75e89c683e84e25b4eeb1801", "Sunday - Frequent Stop Radius (500m)": "feature_group_a32313d3dec618538502c01262d04a5d"};
-                    var loadedData = {};
-                    var arrivalsData = null;
-                    var activeDayType = 'weekend'; // Default
 
+                    // --- STATE MANAGEMENT ---
+                    let activeDayType = 'weekend';
+                    let isRadiusVisible = false;
+                    let loadedLayers = {}; // Cache for L.geoJson layers
+                    let arrivalsData = null;
+
+                    // Create a dedicated pane for the radius layer to control z-index
+                    map.createPane('radius_pane');
+                    map.getPane('radius_pane').style.zIndex = 450; // Lower than markers (default is 600)
+                    map.getPane('radius_pane').style.pointerEvents = 'none'; // *** CRITICAL FIX ***
+
+                    // --- DATA FETCHING ---
                     fetch('./data/arrivals.json')
                         .then(response => response.json())
                         .then(data => {
                             arrivalsData = data;
-                            loadGeoJson('Weekend - Stops', layerConfigs['Weekend - Stops'].url, layerConfigs['Weekend - Stops'].options);
+                            loadAndShowLayer('weekend_stops'); // Initial layer load
                         })
                         .catch(err => console.error('Failed to load arrivals.json', err));
 
-                    var layerConfigs = {
-                        'Weekend - Stops': { url: './data/weekend_stops.geojson', options: { pointToLayer: createStopMarker } },
-                        'Weekend - Frequent Stop Radius (500m)': { url: './data/weekend_radius.geojson', options: { style: radiusStyle } },
-                        'Workday - Stops': { url: './data/workday_stops.geojson', options: { pointToLayer: createStopMarker } },
-                        'Workday - Frequent Stop Radius (500m)': { url: './data/workday_radius.geojson', options: { style: radiusStyle } },
-                        'Saturday - Stops': { url: './data/saturday_stops.geojson', options: { pointToLayer: createStopMarker } },
-                        'Saturday - Frequent Stop Radius (500m)': { url: './data/saturday_radius.geojson', options: { style: radiusStyle } },
-                        'Sunday - Stops': { url: './data/sunday_stops.geojson', options: { pointToLayer: createStopMarker } },
-                        'Sunday - Frequent Stop Radius (500m)': { url: './data/sunday_radius.geojson', options: { style: radiusStyle } }
-                    };
+                    // --- UI CONTROL ---
+                    const CustomControl = L.Control.extend({
+                        onAdd: function(map) {
+                            const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+                            container.style.backgroundColor = 'white';
+                            container.style.padding = '10px';
+                            container.style.borderRadius = '5px';
+                            container.innerHTML = `
+                                <h4 style="margin-top:0; margin-bottom:5px;">Day Type</h4>
+                                <input type="radio" id="weekend" name="day_type" value="weekend" checked>
+                                <label for="weekend" style="cursor:pointer;">Weekend</label><br>
+                                <input type="radio" id="workday" name="day_type" value="workday">
+                                <label for="workday" style="cursor:pointer;">Workday</label><br>
+                                <input type="radio" id="saturday" name="day_type" value="saturday">
+                                <label for="saturday" style="cursor:pointer;">Saturday</label><br>
+                                <input type="radio" id="sunday" name="day_type" value="sunday">
+                                <label for="sunday" style="cursor:pointer;">Sunday</label><br>
+                                <hr style="margin: 10px 0;">
+                                <h4 style="margin-top:0; margin-bottom:5px;">Overlays</h4>
+                                <input type="checkbox" id="radius_toggle">
+                                <label for="radius_toggle" style="cursor:pointer;">Frequent Stop Radius</label>
+                            `;
+                            L.DomEvent.disableClickPropagation(container);
+                            return container;
+                        },
+                        onRemove: function(map) {}
+                    });
+                    const control = new CustomControl({ position: 'topright' });
+                    map.addControl(control);
+                    
+                    // --- EVENT LISTENERS for the new control ---
+                    document.querySelectorAll('input[name="day_type"]').forEach(radio => {
+                        radio.addEventListener('change', (e) => switchDayType(e.target.value));
+                    });
+                    document.getElementById('radius_toggle').addEventListener('change', (e) => {
+                        toggleRadius(e.target.checked);
+                    });
 
+                    // --- LAYER LOGIC ---
+                    function switchDayType(newDayType) {
+                        // Hide old layers
+                        if (loadedLayers[activeDayType + '_stops']) map.removeLayer(loadedLayers[activeDayType + '_stops']);
+                        if (loadedLayers[activeDayType + '_radius']) map.removeLayer(loadedLayers[activeDayType + '_radius']);
+                        
+                        activeDayType = newDayType;
+
+                        // Show new layers
+                        loadAndShowLayer(activeDayType + '_stops');
+                        if (isRadiusVisible) {
+                            loadAndShowLayer(activeDayType + '_radius');
+                        }
+                    }
+
+                    function toggleRadius(isVisible) {
+                        isRadiusVisible = isVisible;
+                        if (isVisible) {
+                            loadAndShowLayer(activeDayType + '_radius');
+                        } else {
+                            if (loadedLayers[activeDayType + '_radius']) {
+                                map.removeLayer(loadedLayers[activeDayType + '_radius']);
+                            }
+                        }
+                    }
+
+                    function loadAndShowLayer(layerKey) {
+                        if (loadedLayers[layerKey]) {
+                            map.addLayer(loadedLayers[layerKey]);
+                            return;
+                        }
+                        
+                        const [day, type] = layerKey.split('_');
+                        const url = `./data/${day}_${type}.geojson`;
+                        
+                        const options = (type === 'stops') 
+                            ? { pointToLayer: createStopMarker } 
+                            : { style: radiusStyle, pane: 'radius_pane' };
+
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                const geoJsonLayer = L.geoJson(data, options);
+                                loadedLayers[layerKey] = geoJsonLayer;
+                                geoJsonLayer.addTo(map);
+                            })
+                            .catch(err => console.error(`Error loading ${url}:`, err));
+                    }
+
+                    // --- MARKER & POPUP LOGIC ---
                     function radiusStyle(feature) { return { fillColor: '#3186cc', color: 'none', weight: 0, fillOpacity: 0.3 }; }
 
                     function createStopMarker(feature, latlng) {
                         var marker = L.circleMarker(latlng, { radius: 5, color: feature.properties.color, fillColor: feature.properties.color, fillOpacity: 0.7 });
-                        marker.feature = feature; // Attach feature data to marker
+                        marker.feature = feature;
                         marker.bindTooltip(feature.properties.tooltip);
                         marker.on('click', function(e) {
                             var props = e.target.feature.properties;
-                            var popupContent = buildPopupHtml(props, activeDayType);
+                            var popupContent = buildPopupHtml(props);
                             var iframe = document.createElement('iframe');
                             iframe.style.width = '600px'; iframe.style.height = '450px'; iframe.style.border = 'none';
                             iframe.srcdoc = popupContent;
@@ -120,43 +205,36 @@
                         return rowsHtml;
                     }
 
-                    function buildPopupHtml(props, dayType) {
-                        if (!arrivalsData || !arrivalsData[dayType]) return 'Loading arrival data...';
+                    function buildPopupHtml(props) {
+                        if (!arrivalsData || !arrivalsData[activeDayType]) return 'Loading arrival data...';
                         
                         let stopTableHtml = '';
                         let groupTableHtml = '';
 
-                        if (dayType === 'weekend') {
-                            // Filter weekend data into Saturday and Sunday
-                            const allStopArrivals = arrivalsData[dayType].filter(a => a.stop_id === props.stop_id);
-                            const allGroupArrivals = arrivalsData[dayType].filter(a => a.stop_group_id === props.group_id);
+                        if (activeDayType === 'weekend') {
+                            const allStopArrivals = arrivalsData[activeDayType].filter(a => a.stop_id === props.stop_id);
+                            const allGroupArrivals = arrivalsData[activeDayType].filter(a => a.stop_group_id === props.group_id);
 
                             const stopArrivalsSat = allStopArrivals.filter(a => a.service_day === 'Saturday');
                             const stopArrivalsSun = allStopArrivals.filter(a => a.service_day === 'Sunday');
                             const groupArrivalsSat = allGroupArrivals.filter(a => a.service_day === 'Saturday');
                             const groupArrivalsSun = allGroupArrivals.filter(a => a.service_day === 'Sunday');
                             
-                            // Build a single stream of rows for the stop table: Saturday arrivals then Sunday arrivals
                             stopTableHtml = `
                                 <tr><td colspan="4" style="text-align:center; font-weight:bold; background-color:#eee;">Saturday</td></tr>
                                 ${generateArrivalRowsHtml(stopArrivalsSat)}
                                 <tr><td colspan="4" style="text-align:center; font-weight:bold; background-color:#eee;">Sunday</td></tr>
                                 ${generateArrivalRowsHtml(stopArrivalsSun)}
                             `;
-
-                            // Build a single stream of rows for the group table: Saturday arrivals then Sunday arrivals
                             groupTableHtml = `
                                 <tr><td colspan="4" style="text-align:center; font-weight:bold; background-color:#eee;">Saturday</td></tr>
                                 ${generateArrivalRowsHtml(groupArrivalsSat)}
                                 <tr><td colspan="4" style="text-align:center; font-weight:bold; background-color:#eee;">Sunday</td></tr>
                                 ${generateArrivalRowsHtml(groupArrivalsSun)}
                             `;
-
                         } else {
-                            // Handle single days (workday, saturday, sunday)
-                            let stopArrivals = arrivalsData[dayType].filter(a => a.stop_id === props.stop_id);
-                            let groupArrivals = arrivalsData[dayType].filter(a => a.stop_group_id === props.group_id);
-                            
+                            let stopArrivals = arrivalsData[activeDayType].filter(a => a.stop_id === props.stop_id);
+                            let groupArrivals = arrivalsData[activeDayType].filter(a => a.stop_group_id === props.group_id);
                             stopTableHtml = generateArrivalRowsHtml(stopArrivals);
                             groupTableHtml = generateArrivalRowsHtml(groupArrivals);
                         }
@@ -169,46 +247,20 @@
                             </tr>
                         </table>`;
                     }
-
-                    function loadGeoJson(layerName, url, options) {
-                        if (loadedData[layerName]) return;
-                        fetch(url)
-                            .then(response => response.json())
-                            .then(data => {
-                                var leaflet_variable_name = layer_objects[layerName];
-                                var leaflet_layer_object = window[leaflet_variable_name];
-                                if (leaflet_layer_object) {
-                                    var geoJsonLayer = L.geoJson(data, options);
-                                    geoJsonLayer.addTo(leaflet_layer_object);
-                                    loadedData[layerName] = true;
-                                }
-                            })
-                            .catch(err => console.error('Error loading GeoJSON:', err));
-                    }
-
-                    map.on('baselayerchange', function(e) {
-                        activeDayType = e.name.split(' ')[0].toLowerCase();
-                    });
-
-                    map.on('overlayadd', function(e) {
-                        if (layerConfigs[e.name]) {
-                            loadGeoJson(e.name, layerConfigs[e.name].url, layerConfigs[e.name].options);
-                        }
-                    });
                 }
             }, 100);
         })();
     </script>
     
     
-            <div class="folium-map" id="map_3bfb1e9f4420233d456e6ec5655a8a75" ></div>
+            <div class="folium-map" id="map_86334ab4006ad5a8ed79adf60de9289f" ></div>
         
 </body>
 <script>
     
     
-            var map_3bfb1e9f4420233d456e6ec5655a8a75 = L.map(
-                "map_3bfb1e9f4420233d456e6ec5655a8a75",
+            var map_86334ab4006ad5a8ed79adf60de9289f = L.map(
+                "map_86334ab4006ad5a8ed79adf60de9289f",
                 {
                     center: [53.4285, 14.5528],
                     crs: L.CRS.EPSG3857,
@@ -225,7 +277,7 @@
 
         
     
-            var tile_layer_d087ef7dec28b157c7b3209e4744add3 = L.tileLayer(
+            var tile_layer_c36665f4a11b3d2de5d963dcc45f5b6f = L.tileLayer(
                 "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                 {
   "minZoom": 0,
@@ -242,85 +294,7 @@
             );
         
     
-            tile_layer_d087ef7dec28b157c7b3209e4744add3.addTo(map_3bfb1e9f4420233d456e6ec5655a8a75);
-        
-    
-            var feature_group_e0f34281265eaa62d03b139ad558749d = L.featureGroup(
-                {
-}
-            );
-        
-    
-            feature_group_e0f34281265eaa62d03b139ad558749d.addTo(map_3bfb1e9f4420233d456e6ec5655a8a75);
-        
-    
-            var feature_group_0e5ddbe3135f6e7e44f22d746cdf138d = L.featureGroup(
-                {
-}
-            );
-        
-    
-            var feature_group_117d97961da0e29ba884b3e1e13a1303 = L.featureGroup(
-                {
-}
-            );
-        
-    
-            var feature_group_47b5dd27eb0738599cb8f31c462dd416 = L.featureGroup(
-                {
-}
-            );
-        
-    
-            var feature_group_afc98155233253fd47eacf04e498b11f = L.featureGroup(
-                {
-}
-            );
-        
-    
-            var feature_group_1d89c0233dfa85f88f47b5741551d569 = L.featureGroup(
-                {
-}
-            );
-        
-    
-            var feature_group_eb82537f75e89c683e84e25b4eeb1801 = L.featureGroup(
-                {
-}
-            );
-        
-    
-            var feature_group_a32313d3dec618538502c01262d04a5d = L.featureGroup(
-                {
-}
-            );
-        
-    
-            var layer_control_08d6f8383688145f597c0491dbcd77ca_layers = {
-                base_layers : {
-                    "openstreetmap" : tile_layer_d087ef7dec28b157c7b3209e4744add3,
-                },
-                overlays :  {
-                    "Weekend - Stops" : feature_group_e0f34281265eaa62d03b139ad558749d,
-                    "Weekend - Frequent Stop Radius (500m)" : feature_group_0e5ddbe3135f6e7e44f22d746cdf138d,
-                    "Workday - Stops" : feature_group_117d97961da0e29ba884b3e1e13a1303,
-                    "Workday - Frequent Stop Radius (500m)" : feature_group_47b5dd27eb0738599cb8f31c462dd416,
-                    "Saturday - Stops" : feature_group_afc98155233253fd47eacf04e498b11f,
-                    "Saturday - Frequent Stop Radius (500m)" : feature_group_1d89c0233dfa85f88f47b5741551d569,
-                    "Sunday - Stops" : feature_group_eb82537f75e89c683e84e25b4eeb1801,
-                    "Sunday - Frequent Stop Radius (500m)" : feature_group_a32313d3dec618538502c01262d04a5d,
-                },
-            };
-            let layer_control_08d6f8383688145f597c0491dbcd77ca = L.control.layers(
-                layer_control_08d6f8383688145f597c0491dbcd77ca_layers.base_layers,
-                layer_control_08d6f8383688145f597c0491dbcd77ca_layers.overlays,
-                {
-  "position": "topright",
-  "collapsed": true,
-  "autoZIndex": true,
-}
-            ).addTo(map_3bfb1e9f4420233d456e6ec5655a8a75);
-
+            tile_layer_c36665f4a11b3d2de5d963dcc45f5b6f.addTo(map_86334ab4006ad5a8ed79adf60de9289f);
         
 </script>
 </html>
